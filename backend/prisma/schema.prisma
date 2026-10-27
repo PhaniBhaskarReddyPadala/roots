@@ -1,0 +1,309 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────
+
+enum AccountType {
+  REAL
+  DUMMY
+}
+
+enum AccountState {
+  ACTIVE
+  INACTIVE
+  CLAIMED
+}
+
+enum RelationshipType {
+  FATHER
+  MOTHER
+  PARENT
+  SON
+  DAUGHTER
+  BROTHER
+  SISTER
+  UNCLE
+  AUNT
+  GRANDFATHER
+  GRANDMOTHER
+  SPOUSE
+  HUSBAND
+  WIFE
+}
+
+enum RelationshipStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  VERIFIED
+  DISPUTED
+}
+
+enum NotificationType {
+  RELATIONSHIP_REQUEST
+  REQUEST_ACCEPTED
+  REQUEST_REJECTED
+  RELATIONSHIP_VERIFIED
+  RELATIONSHIP_DISPUTED
+  DUMMY_PROFILE_CLAIMED
+  RELATIONSHIP_STATUS_UPDATE
+  EVENT_INVITATION
+  EVENT_RSVP_UPDATE
+}
+
+enum TimelineEntryType {
+  POST
+  MILESTONE
+  EVENT_MEMORY
+}
+
+enum TimelineVisibility {
+  FAMILY
+  PUBLIC
+}
+
+enum RsvpStatus {
+  PENDING
+  GOING
+  INTERESTED
+  CANT_GO
+}
+
+// ─────────────────────────────────────────────
+// User Model (covers both REAL and DUMMY accounts)
+// ─────────────────────────────────────────────
+
+model User {
+  id             String      @id @default(cuid())
+  name           String
+  email          String?     @unique
+  passwordHash   String?
+
+  // Profile fields
+  regionOfOrigin String?
+  motherTongue   String?
+  familySurname  String?
+  surnameOrigin  String?
+  casteSubcaste  String?     // optional and private
+
+  // Account state
+  accountType    AccountType @default(REAL)
+  accountState   AccountState @default(ACTIVE)
+
+  // Claim tracking for dummy profiles
+  claimedById    String?
+  claimedAt      DateTime?
+
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  // Relations
+  sentRequests       RelationshipRequest[] @relation("RequesterRequests")
+  receivedRequests   RelationshipRequest[] @relation("RecipientRequests")
+  relationshipsFrom  Relationship[]        @relation("RelationshipFrom")
+  relationshipsTo    Relationship[]        @relation("RelationshipTo")
+  notifications      Notification[]
+  createdDummies     DummyProfileMeta[]    @relation("CreatedBy")
+  dummyProfileMeta   DummyProfileMeta?
+
+  posts              Post[]
+  comments           Comment[]
+  likes              Like[]
+  hostedEvents       FamilyEvent[]   @relation("EventHost")
+  eventInvitees      EventInvitee[]
+
+  @@map("users")
+}
+
+// ─────────────────────────────────────────────
+// Dummy Profile Metadata
+// ─────────────────────────────────────────────
+
+model DummyProfileMeta {
+  id          String   @id @default(cuid())
+  userId      String   @unique   // references the User row (accountType=DUMMY)
+  createdById String
+  claimState  String   @default("UNCLAIMED") // UNCLAIMED | CLAIM_REQUESTED | CLAIMED
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdBy   User     @relation("CreatedBy", fields: [createdById], references: [id])
+
+  @@map("dummy_profile_meta")
+}
+
+// ─────────────────────────────────────────────
+// Relationship Request
+// ─────────────────────────────────────────────
+
+model RelationshipRequest {
+  id               String             @id @default(cuid())
+  requesterId      String
+  recipientId      String
+  relationshipType RelationshipType
+  status           RelationshipStatus @default(PENDING)
+  message          String?
+
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  requester        User               @relation("RequesterRequests", fields: [requesterId], references: [id])
+  recipient        User               @relation("RecipientRequests", fields: [recipientId], references: [id])
+
+  @@map("relationship_requests")
+}
+
+// ─────────────────────────────────────────────
+// Relationship (accepted edge in the graph)
+// ─────────────────────────────────────────────
+
+model Relationship {
+  id               String             @id @default(cuid())
+  userId           String
+  relatedUserId    String
+  relationshipType RelationshipType
+  status           RelationshipStatus @default(ACCEPTED)
+
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  user             User               @relation("RelationshipFrom", fields: [userId], references: [id])
+  relatedUser      User               @relation("RelationshipTo", fields: [relatedUserId], references: [id])
+
+  @@unique([userId, relatedUserId, relationshipType])
+  @@map("relationships")
+}
+
+// ─────────────────────────────────────────────
+// Notification
+// ─────────────────────────────────────────────
+
+model Notification {
+  id          String           @id @default(cuid())
+  recipientId String
+  type        NotificationType
+  title       String
+  body        String
+  entityId    String?          // Related entity id (requestId, relationshipId, etc.)
+  entityType  String?          // "relationship_request" | "relationship" | "dummy_profile"
+  read        Boolean          @default(false)
+
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  recipient   User             @relation(fields: [recipientId], references: [id])
+
+  @@map("notifications")
+}
+
+// ─────────────────────────────────────────────
+// Posts / Timeline Entries
+// ─────────────────────────────────────────────
+
+model Post {
+  id           String             @id @default(cuid())
+  authorId     String
+  content      String
+  imageUrl     String?
+
+  // Phase 3 — Family Timeline
+  entryType    TimelineEntryType  @default(POST)
+  title        String?            // for MILESTONE / EVENT_MEMORY
+  eventDate    DateTime?          // specific date for milestones/memories
+  visibility   TimelineVisibility @default(FAMILY)
+  taggedUserIds String[]          @default([])
+
+  // Link to a FamilyEvent (for EVENT_MEMORY entries)
+  familyEventId String?
+  familyEvent   FamilyEvent?       @relation(fields: [familyEventId], references: [id])
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  author    User      @relation(fields: [authorId], references: [id])
+  comments  Comment[]
+  likes     Like[]
+
+  @@map("posts")
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  postId    String
+  authorId  String
+  content   String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author    User     @relation(fields: [authorId], references: [id])
+
+  @@map("comments")
+}
+
+model Like {
+  id        String   @id @default(cuid())
+  postId    String
+  userId    String
+
+  createdAt DateTime @default(now())
+
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([postId, userId])
+  @@map("likes")
+}
+
+// ─────────────────────────────────────────────
+// Family Events (Phase 3)
+// ─────────────────────────────────────────────
+
+model FamilyEvent {
+  id          String   @id @default(cuid())
+  hostId      String
+  title       String
+  eventDate   DateTime
+  eventTime   String?  // human-readable time string e.g. "7:00 PM"
+  location    String?
+  description String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  host        User            @relation("EventHost", fields: [hostId], references: [id])
+  invitees    EventInvitee[]
+  timelinePosts Post[]
+
+  @@map("family_events")
+}
+
+model EventInvitee {
+  id          String     @id @default(cuid())
+  eventId     String
+  userId      String
+  rsvpStatus  RsvpStatus @default(PENDING)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  event       FamilyEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user        User        @relation(fields: [userId], references: [id])
+
+  @@unique([eventId, userId])
+  @@map("event_invitees")
+}
